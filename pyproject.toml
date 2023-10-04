@@ -1,0 +1,24 @@
+[tool.poetry]
+name = "gspread-orm"
+version = "0.1.0"
+description = ""
+authors = ["Roberto Alamos <ralamosm@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.8"
+gspread = "^5.11.1"
+pydantic = "^1.10.11"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.2"
+pytest-mock = "^3.11.1"
+mock = "^5.1.0"
+pre-commit = "^3.4.0"
+
+[tool.poetry.group.dev]
+optional = true
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
