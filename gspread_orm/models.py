@@ -1,29 +1,15 @@
-import json
 import re
+import warnings
 from typing import Any
 from typing import Optional
 
 import gspread
 from pydantic import BaseModel
+from pydantic import ConfigDict
 from pydantic import Field
 
 
 DEFAULT_EMPTY_VALUE = ""
-
-
-class NoneToStringJSONEncoder(json.JSONEncoder):
-    """JSON Encoder turning None into ''. Required for Google Spreadsheets"""
-
-    def default(self, z):
-        if z is None:
-            return DEFAULT_EMPTY_VALUE
-        else:
-            return super().default(z)
-
-
-def gspread_worksheet_json_dumps(v, *, default):
-    # encoding function wrapping NoneToStringJSONEncoder
-    return json.dumps(v, default=default, cls=NoneToStringJSONEncoder)
 
 
 class ResultNotFound(Exception):
@@ -99,7 +85,7 @@ class QueryManager:
     @property
     def headers(self):
         if not hasattr(self, "_headers"):
-            if self.worksheet.row_count == 0:
+            if self.count() == 0:
                 # add header row to worksheet if it's empty
                 self.worksheet.append_row(self.model.fields(exclude={"id"}))
 
@@ -139,7 +125,8 @@ class QueryManager:
     def query_generator(self, **kwargs):
         # TO-DO: Improve this method's performance
         for obj in self.all():
-            obj_dict = json.loads(obj.json())
+            # obj_dict = json.loads(obj.model_dump_json())
+            obj_dict = obj.model_dump()
             if all(obj_dict.get(k) == v for k, v in kwargs.items()):
                 yield obj
 
@@ -154,12 +141,10 @@ class QueryManager:
 
 
 class GSheetModel(BaseModel):
-    id: int = Field(None, gt=0)
-    _objects: Optional[Any] = None
+    model_config = ConfigDict(json_encoders={None: lambda x: DEFAULT_EMPTY_VALUE})
 
-    class Config:
-        # fields = {'id': {'exclude': True}}
-        json_dumps = gspread_worksheet_json_dumps
+    id: Optional[int] = Field(None, gt=0)
+    _objects: Optional[Any] = None
 
     class Meta:
         spreadsheet_id = None
@@ -180,7 +165,7 @@ class GSheetModel(BaseModel):
         if exclude is None:
             exclude = ()
 
-        _fields = list(cls.schema()["properties"].keys())
+        _fields = list(cls.model_fields)
         for key in _fields:
             if key in exclude:
                 _fields.remove(key)
@@ -192,11 +177,11 @@ class GSheetModel(BaseModel):
         for field in row:
             if not row[field]:
                 row[field] = cls.__annotations__[field].default if hasattr(cls.__annotations__[field], "default") else None
-        return cls.parse_obj(row)
+        return cls.model_validate(row)
 
     def _get_row_id(self, descriptor):
-        # descriptor is like DB!A4:C4
-        rx = re.compile(r"[^!]+![A-Z]+(\d+):")
+        # descriptor is like DB!A4:C4 or 'Sheet1!A4'
+        rx = re.compile(r"[^!]+![A-Z]+(\d+):?")
         m = rx.search(descriptor)
         if m:
             return int(m.group(1))
@@ -206,15 +191,11 @@ class GSheetModel(BaseModel):
         super().__init_subclass__(**kwargs)
         cls.objects = QueryManager(model=cls)
 
-    def json(self, *args, **kwargs):
-        base_dict = json.loads(super().json(*args, **kwargs))
-        return json.dumps(base_dict, cls=NoneToStringJSONEncoder)
-
     def save(self):
-        self.__class__(**self.dict())  # re-create instance to trigger validation
+        self.__class__(**self.model_dump())  # re-create instance to trigger validation
 
         # turn the object into a row in the order of the spreadsheet
-        dumped = json.loads(self.json(exclude={"id"}))
+        dumped = self.model_dump(exclude={"id"})
         values = [dumped[field] for _, field in self.objects.col_to_field_map.items()]
 
         # save data
@@ -231,3 +212,6 @@ class GSheetModel(BaseModel):
     def delete(self):
         if self.id is not None:
             self.objects.worksheet.delete_row(self.id)
+            self.id = None
+        else:
+            warnings.warn("Object is not persisted yet so nothing to delete.")
