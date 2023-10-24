@@ -141,7 +141,7 @@ class QueryManager:
 
 
 class GSheetModel(BaseModel):
-    model_config = ConfigDict(json_encoders={None: lambda x: DEFAULT_EMPTY_VALUE})
+    model_config = ConfigDict(use_enum_values=True, json_encoders={None: lambda _: DEFAULT_EMPTY_VALUE})
 
     id: Optional[int] = Field(None, gt=0)
     _objects: Optional[Any] = None
@@ -195,7 +195,7 @@ class GSheetModel(BaseModel):
         self.__class__(**self.model_dump())  # re-create instance to trigger validation
 
         # turn the object into a row in the order of the spreadsheet
-        dumped = self.model_dump(exclude={"id"})
+        dumped = self.model_dump(exclude={"id"}, mode="json")
         values = [dumped[field] for _, field in self.objects.col_to_field_map.items()]
 
         # save data
