@@ -202,7 +202,6 @@ class GSheetModel(BaseModel):
     def __setattr__(self, key, value):
         # If the key is not one of the private fields, check for changes
         if not key.startswith("_") and getattr(self, "_change_tracking_enabled", True):
-            print(f"Changing {key}: {value}")
             # Compare with the current value
             current_value = getattr(self, key, None)
             if current_value != value:
