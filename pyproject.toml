@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "gspread-orm"
-version = "0.1.4"
+version = "0.1.5"
 description = ""
 authors = ["Roberto Alamos <ralamosm@gmail.com>"]
 readme = "README.md"

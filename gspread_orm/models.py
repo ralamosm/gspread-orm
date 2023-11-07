@@ -133,8 +133,18 @@ class QueryManager:
     def count(self):
         return sum(1 for _ in self.all())
 
+    def get_all_records(self):
+        # Wrapper around get_all_records() because it has problems when the doc doesn't have any rows other than the headers
+        try:
+            return self.worksheet.get_all_records()
+        except IndexError:
+            r = self.worksheet.get_all_values()
+            if len(r) < 2:
+                return []
+            raise
+
     def all(self):
-        for idx, raw_row in enumerate(self.worksheet.get_all_records()):
+        for idx, raw_row in enumerate(self.get_all_records()):
             obj = self.model.parse_row(raw_row)
             obj._disable_change_tracking()
             obj.id = idx + 2  # due to items starting at 2
