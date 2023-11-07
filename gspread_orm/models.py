@@ -136,7 +136,9 @@ class QueryManager:
     def all(self):
         for idx, raw_row in enumerate(self.worksheet.get_all_records()):
             obj = self.model.parse_row(raw_row)
+            obj._disable_change_tracking()
             obj.id = idx + 2  # due to items starting at 2
+            obj._enable_change_tracking()
             yield obj
 
 
@@ -144,6 +146,9 @@ class GSheetModel(BaseModel):
     model_config = ConfigDict(use_enum_values=True, json_encoders={None: lambda _: DEFAULT_EMPTY_VALUE})
 
     id: Optional[int] = Field(None, gt=0)
+
+    # private fields
+    _changed_fields: set = set()
     _objects: Optional[Any] = None
 
     class Meta:
@@ -176,7 +181,10 @@ class GSheetModel(BaseModel):
         """Translates from a dict to an instance of the model"""
         for field in row:
             if not row[field]:
-                row[field] = cls.__annotations__[field].default if hasattr(cls.__annotations__[field], "default") else None
+                if field in cls.__annotations__:
+                    row[field] = cls.__annotations__[field].default if hasattr(cls.__annotations__[field], "default") else None
+                else:
+                    row[field] = None
         return cls.model_validate(row)
 
     def _get_row_id(self, descriptor):
@@ -190,6 +198,28 @@ class GSheetModel(BaseModel):
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         cls.objects = QueryManager(model=cls)
+
+    def __setattr__(self, key, value):
+        # If the key is not one of the private fields, check for changes
+        if not key.startswith("_") and getattr(self, "_change_tracking_enabled", True):
+            print(f"Changing {key}: {value}")
+            # Compare with the current value
+            current_value = getattr(self, key, None)
+            if current_value != value:
+                self._changed_fields.add(key)
+
+        # Call the super().__setattr__ method to actually set the value
+        super().__setattr__(key, value)
+
+    def _disable_change_tracking(self):
+        super().__setattr__("_change_tracking_enabled", False)
+
+    def _enable_change_tracking(self):
+        super().__setattr__("_change_tracking_enabled", True)
+
+    def has_changed(self):
+        # Check if any fields have been changed
+        return bool(self._changed_fields)
 
     def save(self):
         self.__class__(**self.model_dump())  # re-create instance to trigger validation
