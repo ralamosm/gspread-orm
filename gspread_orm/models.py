@@ -61,7 +61,13 @@ class QueryManager:
     def spreadsheet(self):
         if not hasattr(self, "_spreadsheet"):
             try:
-                self._spreadsheet = self.gc.open_by_key(self.model.Meta.spreadsheet_id)
+                if hasattr(self.model.Meta, "spreadsheet_id"):
+                    self._spreadsheet = self.gc.open_by_key(self.model.Meta.spreadsheet_id)
+                elif hasattr(self.model.Meta, "spreadsheet_name"):
+                    self._spreadsheet = self.gc.open(self.model.Meta.spreadsheet_name)
+                else:
+                    # Assume url
+                    self._spreadsheet = self.gc.open_by_url(self.model.Meta.spreadsheet_url)
             except gspread.SpreadsheetNotFound as e:
                 raise SpreadsheetNotFound(e)
         return self._spreadsheet
@@ -69,7 +75,12 @@ class QueryManager:
     @property
     def worksheet(self):
         if not hasattr(self, "_worksheet"):
-            if not hasattr(self.model.Meta, "worksheet_name") or self.model.Meta is None:
+            if (
+                not hasattr(self.model, "Meta")
+                or self.model.Meta is None
+                or not hasattr(self.model.Meta, "worksheet_name")
+                or self.model.Meta.worksheet_name is None
+            ):
                 self._worksheet = self.spreadsheet.get_worksheet(0)  # Get the first worksheet
             else:
                 try:
@@ -163,6 +174,8 @@ class GSheetModel(BaseModel):
 
     class Meta:
         spreadsheet_id = None
+        spreadsheet_name = None
+        spreadsheet_url = None
         worksheet_name = None
         configuration = {}  # JSON config as dictionary
 
