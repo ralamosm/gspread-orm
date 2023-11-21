@@ -1,7 +1,9 @@
 import re
 import warnings
 from typing import Any
+from typing import List
 from typing import Optional
+from typing import Union
 
 import gspread
 from pydantic import BaseModel
@@ -36,20 +38,44 @@ class FieldNameMismatch(Exception):
     pass
 
 
-def get_column_letter(index):
-    letters = ""
-    while index:
-        index, remainder = divmod(index - 1, 26)
-        letters = chr(65 + remainder) + letters
-    return letters
+def find_ranges(sequence: List[int]) -> List[List[int]]:
+    if not sequence:
+        return []
+
+    sequence.sort()
+    ranges = []
+    start = sequence[0]
+
+    for i in range(len(sequence) - 1):
+        if sequence[i] + 1 < sequence[i + 1]:
+            ranges.append(list(range(start, sequence[i] + 1)))
+            start = sequence[i + 1]
+
+    ranges.append(list(range(start, sequence[-1] + 1)))
+
+    return ranges
+
+
+def split_list(original, lengths):
+    result = []
+    start = 0
+
+    for length in lengths:
+        end = start + length
+        result.append(original[start:end])
+        start = end
+
+    return result
 
 
 class QueryManager:
-    def __init__(self, model):
+    def __init__(self, model: "GSheetModel") -> None:
         self.model = model
+        self.data_is_a_range = False
+        self.headers_col = {}
 
     @property
-    def gc(self):
+    def gc(self) -> gspread.client.Client:
         if not hasattr(self, "_gc"):
             try:
                 self._gc = gspread.service_account_from_dict(self.model.Meta.configuration)
@@ -94,22 +120,39 @@ class QueryManager:
         return self._worksheet
 
     @property
-    def headers(self):
-        if not hasattr(self, "_headers"):
-            if self.count() == 0:
+    def headers(self, force: Optional[bool] = False) -> List:
+        if not hasattr(self, "_headers") or force:
+            if not self.worksheet.row_values(1):
                 # add header row to worksheet if it's empty
                 self.worksheet.append_row(self.model.fields(exclude={"id"}))
 
             self._headers = self.worksheet.row_values(1)
-            if set(self._headers) != set(self.model.fields(exclude={"id"})):
+            if not set(self.model.fields(exclude={"id"})).issubset(set(self._headers)):
                 raise FieldNameMismatch("Field names in model and worksheet do not match.")
+
         return self._headers
 
     @property
-    def col_to_field_map(self):
-        if not hasattr(self, "_col_to_field_map"):
-            self._col_to_field_map = {get_column_letter(i + 1): value for i, value in enumerate(self.headers)}
-        return self._col_to_field_map
+    def header_to_col(self):
+        if not hasattr(self, "_header_to_col"):
+            self._header_to_col = {}
+            for key in self.model.fields(exclude={"id"}):
+                cell = self.worksheet.find(key)
+                self._header_to_col[key] = cell.col
+        return self._header_to_col
+
+    @property
+    def col_to_header(self):
+        if not hasattr(self, "_col_to_header"):
+            self._col_to_header = {value: key for key, value in self.header_to_col.items()}
+        return self._col_to_header
+
+    @property
+    def col_ranges(self):
+        """Retrieves ranges of columns so we can optimize the number of updating calls"""
+        if not hasattr(self, "_col_ranges"):
+            self._col_ranges = find_ranges(list(self.header_to_col.values()))
+        return self._col_ranges
 
     def get(self, **kwargs):
         """Fetch just one row from the spreadsheet"""
@@ -147,7 +190,7 @@ class QueryManager:
     def get_all_records(self):
         # Wrapper around get_all_records() because it has problems when the doc doesn't have any rows other than the headers
         try:
-            return self.worksheet.get_all_records()
+            return self.worksheet.get_all_records(default_blank=None)
         except IndexError:
             r = self.worksheet.get_all_values()
             if len(r) < 2:
@@ -188,7 +231,7 @@ class GSheetModel(BaseModel):
         self._objects = value
 
     @classmethod
-    def fields(cls, exclude=None):
+    def fields(cls, exclude: Optional[Union[List, set]] = None):
         """Returns a list of field names"""
         if exclude is None:
             exclude = ()
@@ -208,7 +251,8 @@ class GSheetModel(BaseModel):
                     row[field] = cls.__annotations__[field].default if hasattr(cls.__annotations__[field], "default") else None
                 else:
                     row[field] = None
-        return cls.model_validate(row)
+        data = {k: v for k, v in row.items() if k in cls.fields(exclude={"id"})}
+        return cls.model_validate(data)  # only fields defined in the model
 
     def _get_row_id(self, descriptor):
         # descriptor is like DB!A4:C4 or 'Sheet1!A4'
@@ -245,21 +289,32 @@ class GSheetModel(BaseModel):
 
     def save(self):
         self.__class__(**self.model_dump())  # re-create instance to trigger validation
+        # trigger setting first row if not there yet
+        assert bool(self.objects.headers)
 
         # turn the object into a row in the order of the spreadsheet
         dumped = self.model_dump(exclude={"id"}, mode="json")
-        values = [dumped[field] for _, field in self.objects.col_to_field_map.items()]
 
         # save data
         if self.id is None:
-            # this is a new object
-            up = self.objects.worksheet.append_row(values)
+            # this is a new object, must append_row using all fields of headers although non-model fields must be empty
+            full_values = {k: None for k in self.objects.worksheet.row_values(1)}
+            full_values.update(dumped)
+            up = self.objects.worksheet.append_row([full_values[field] for field in self.objects.headers])
             self.id = self._get_row_id(up["updates"]["updatedRange"])
         else:
             # this is an existing object
-            cols = list(self.objects.col_to_field_map.keys())
-            cell_range = f"{cols[0]}{self.id}:{cols[-1]}{self.id}"
-            self.objects.worksheet.update(cell_range, [values])
+            # update just our fields
+            values = [dumped[field] for field in self.objects.headers if field in self.fields()]
+            splitted_values = split_list(values, [len(r) for r in self.objects.col_ranges])
+
+            data = []
+            for col_range, range_values in zip(self.objects.col_ranges, splitted_values):
+                range = "{start}:{end}".format(
+                    start=gspread.utils.rowcol_to_a1(self.id, col_range[0]), end=gspread.utils.rowcol_to_a1(self.id, col_range[-1])
+                )
+                data.append({"range": range, "values": [range_values]})
+            self.objects.worksheet.batch_update(data)
 
     def delete(self):
         if self.id is not None:

@@ -16,7 +16,7 @@ from gspread_orm.models import WorksheetNotFound
 TEST_DATA = [["name"], ["foo"], ["foo"], ["bar"]]  # this is the headers row  # id=2  # id=3  # id=4
 
 
-def mock_fn_get_all_records():
+def mock_fn_get_all_records(*args, **kwargs):
     """Mocked function to simulate gspread.worksheet.get_all_records method"""
     records = []
     for idx in range(1, len(TEST_DATA)):
